@@ -4,7 +4,7 @@ Requires=dbus.service
 After=dbus.service
 
 [Service]
-ExecStart=/bin/bash -c on-colorscheme-changed
+ExecStart=%h/.local/bin/on-colorscheme-changed
 Type=simple
 Restart=on-failure
 

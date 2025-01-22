@@ -1,94 +1,103 @@
 use futures_util::stream::StreamExt;
-use std::error::Error;
+use serde::Deserialize;
+use std::{collections::HashMap, ffi::OsStr, path::PathBuf};
 use tokio::fs;
+use anyhow::Result;
+use ashpd::desktop::settings::{ColorScheme, Settings};
 
-use zbus::{dbus_proxy, zvariant::OwnedValue, Connection};
+use dirs::config_dir;
 
-#[dbus_proxy(
-    interface = "org.freedesktop.portal.Settings",
-    default_service = "org.freedesktop.portal.Desktop",
-    default_path = "/org/freedesktop/portal/desktop"
-)]
-trait Settings {
-    #[dbus_proxy(signal)]
-    fn setting_changed(namespace: &str, key: &str, value: OwnedValue) -> zbus::Result<()>;
+fn dotconfig(subpath: &str) -> PathBuf {
+    let mut path = config_dir().unwrap();
+    path.push(subpath);
+    path
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ColorScheme {
-    Light,
-    Dark,
+fn normalize_path(path: &PathBuf) -> PathBuf {
+    if path.is_relative() {
+        let mut p = dirs::home_dir().unwrap();
+        p.push(path);
+        p
+    } else {
+        path.clone()
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let conn = Connection::session().await?;
-    let settings = SettingsProxy::new(&conn).await?;
-    let mut colorscheme_changing = settings
-        .receive_setting_changed_with_args(&[
-            (0, "org.freedesktop.appearance"),
-            (1, "color-scheme"),
-        ])
-        .await?;
+async fn main() -> Result<()> {
+    let settings = Settings::new().await?;
 
     println!("Connected to dbus! Waiting for changes...");
 
-    while let Some(signal) = colorscheme_changing.next().await {
-        if let Ok(args) = signal.args() {
-            let val = TryInto::<u32>::try_into(args.value)?;
-            match val {
-                0 => on_colorscheme_changed(ColorScheme::Light).await?,
-                1 => on_colorscheme_changed(ColorScheme::Dark).await?,
-                _ => panic!("Unexpected value"),
-            };
-        } else {
-            eprintln!("{:?}", signal.args());
-        }
+    let prop = settings.read::<ColorScheme>("org.freedesktop.appearance", "color-scheme").await?;
+
+    let config: Config = toml::from_str(&fs::read_to_string(dotconfig("theme-switcher.toml")).await?)?;
+    on_colorscheme_changed(prop, config.links.values()).await?;
+
+    while let Some(Ok(scheme)) = settings
+        .receive_setting_changed_with_args::<ColorScheme>(
+            "org.freedesktop.appearance",
+            "color-scheme",
+        )
+        .await?
+        .next()
+        .await {
+            on_colorscheme_changed(scheme, config.links.values()).await?
     }
 
     Ok(())
 }
 
-async fn on_colorscheme_changed(cs: ColorScheme) -> Result<(), Box<dyn Error>> {
+type Fallible = Result<()>;
+
+#[derive(Deserialize)]
+struct Link {
+    symlink: PathBuf,
+    light: PathBuf,
+    dark: PathBuf,
+    touch: Option<PathBuf>
+}
+
+#[derive(Deserialize)]
+struct Config {
+    links: HashMap<String, Link>
+}
+
+impl Link{
+    async fn update(&self, cs: ColorScheme) -> Fallible {
+        let wanted = match cs {
+            ColorScheme::PreferDark => &self.dark,
+            ColorScheme::PreferLight  => &self.light,
+            ColorScheme::NoPreference  => &self.light,
+        };
+
+        let symlink = normalize_path(&self.symlink);
+
+        let mut tmp = symlink.clone();
+        tmp.set_extension("tmp");
+        fs::symlink(&wanted, &tmp).await.unwrap();
+        fs::rename(&tmp, &symlink).await.unwrap();
+        if let Some(touch) = &self.touch {
+            touch_file(touch)?;
+        }
+        Ok(())
+    }
+}
+
+fn touch_file(filename: &PathBuf) -> Fallible {
+    let now = chrono::Local::now();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(now.into())
+        .set_modified(now.into());
+    std::fs::File::open(normalize_path(filename))?.set_times(times)?;
+    Ok(())
+}
+
+async fn on_colorscheme_changed(cs: ColorScheme, links: impl Iterator<Item = &Link>) -> Fallible {
     println!("Colorscheme changed: {cs:?}");
 
-    let (from, to) = if cs == ColorScheme::Light {
-        ("catppuccin_mocha", "catppuccin_latte")
-    } else {
-        ("catppuccin_latte", "catppuccin_mocha")
-    };
-
-    let mut helix_conf_file = dirs::config_dir().unwrap();
-    helix_conf_file.push("helix/config.toml");
-    let helix_conf = fs::read_to_string(&helix_conf_file).await?;
-
-    if helix_conf.contains(from) {
-        println!("Updating helix config to {cs:?}");
-        let helix_conf = helix_conf.replace(from, to);
-        fs::write(helix_conf_file, &helix_conf).await?;
-    } else {
-        println!("helix config did not contain {from}. Nothing to do.");
+    for link in links {
+        link.update(cs).await?;
     }
-
-    let mut from_fname = dirs::config_dir().unwrap();
-    let mut to_fname = dirs::config_dir().unwrap();
-    if cs == ColorScheme::Light {
-        from_fname.push("alacritty/alacritty.light.toml");
-        to_fname.push("alacritty/alacritty.dark.toml");
-    } else {
-        from_fname.push("alacritty/alacritty.dark.toml");
-        to_fname.push("alacritty/alacritty.light.toml");
-    };
-
-    if fs::try_exists(&from_fname).await.is_ok_and(|val| val) {
-        println!("Updating alacritty.toml to {cs:?}");
-        let mut alacritty_conf_file = dirs::config_dir().unwrap();
-        alacritty_conf_file.push("alacritty/alacritty.toml");
-        fs::rename(&alacritty_conf_file, &to_fname).await?;
-        fs::rename(&from_fname, &alacritty_conf_file).await?;
-    } else {
-        println!("File {from_fname:?} not found. Nothing to do.");
-    }
-
     Ok(())
 }
