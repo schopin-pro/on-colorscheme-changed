@@ -1,0 +1,16 @@
+# Simple symlink toggle between two files.
+# If the symlink path is relative, it is taken from $HOME
+# light/dark are related to the symlink location (as with ln -s)
+[links.lsd]
+symlink = ".config/lsd/colors.yaml"
+light = "colors-light.yaml"
+dark = "colors-dark.yaml"
+
+# Optional 'touch' field to mark a file to touch once the symlink has been
+# updated, as a mechanism to signal the application that the config changed.
+[links.alacritty]
+symlink = ".config/alacritty/theme.toml"
+light = "themes/themes/github_light.toml"
+dark = "themes/themes/ubuntu.toml"
+touch = ".config/alacritty/alacritty.toml"
+

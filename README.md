@@ -10,27 +10,10 @@ Prerequisites:
   * Install rust and cargo. See [rust-lang.org/tools/install](https://www.rust-lang.org/tools/install).
 
   * You'll need to be running a linux distribution which uses systemd, and where the desktop environment
-    notifies about color scheme changing on D-Bus. I know Gnome does, KDE probably does too :smile:
+    notifies about color scheme changing on D-Bus. Gnome does, KDE probably as well.
 
-```sh
-git clone <this repo>
-cd on-colorscheme-changed
-# open src/main.rs in your favorite editor and adjust the `on_colorscheme_changed` function
-# to your liking.
-
-# If you want to run it in the foreground to try it out
-cargo run
-
-# If you want to run it in the background with systemd
-cargo install --locked --path . # also ensure ~/.cargo/bin is in $PATH
-systemctl --user enable ./on-colorscheme-changed.service
-# The above command only works nicely on Fedora 39.
-# Otherwise you can copy or symlink it to ~/.config/systemd/user
-# See https://wiki.archlinux.org/title/Systemd/User 
-
-systemctl --user start on-colorscheme-changed
-```
+Use the `deploy.sh` script to build and deploy the program as a local user service.
 
 ## Blog post
 
-I wrote a blog post about this [here](https://www.christianfosli.com/posts/2024-on-colorscheme-changed/).
+The original author wrote a blog post about this [here](https://www.christianfosli.com/posts/2024-on-colorscheme-changed/).
